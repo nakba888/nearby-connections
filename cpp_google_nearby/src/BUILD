@@ -5,6 +5,6 @@ cc_binary(
     srcs = ["main.cc"],
     copts = ["-std=c++17"],
     deps = [
-        "@com_google_nearby//connections:core",
+        "//connections:core",
     ],
 )
