@@ -31,7 +31,23 @@ mkdir -p "$TARGET_DIR"
 cp src/main.cc "$TARGET_DIR/main.cc"
 cp src/BUILD "$TARGET_DIR/BUILD"
 
-# 4. Build with Bazel (C++20 required for operator<=>)
+# 4. Patch upstream open-source include bug in google-nearby
+echo "Applying upstream compatibility patches..."
+mkdir -p "$SCRIPT_DIR/google-nearby/sharing/internal/base/strings"
+if [ ! -f "$SCRIPT_DIR/google-nearby/sharing/internal/base/strings/utf_string_conversions.h" ]; then
+    cat << 'EOF' > "$SCRIPT_DIR/google-nearby/sharing/internal/base/strings/utf_string_conversions.h"
+#pragma once
+#include <string>
+#include <string_view>
+EOF
+fi
+
+if [ -f "$SCRIPT_DIR/google-nearby/connections/implementation/offline_frames_validator.cc" ]; then
+    sed -i 's|#include "sharing/internal/base/utf_string_conversions.h"|// #include "sharing/internal/base/utf_string_conversions.h"|g' \
+        "$SCRIPT_DIR/google-nearby/connections/implementation/offline_frames_validator.cc" || true
+fi
+
+# 5. Build with Bazel (C++20 & GITHUB_BUILD flag)
 cd google-nearby
 
 if command -v clang >/dev/null 2>&1; then
@@ -43,9 +59,11 @@ echo "Compiling with Bazel (C++20)..."
 bazel build //connections/samples/rpi_receiver:nearby_discoverer \
     --check_visibility=false \
     --cxxopt='-std=c++20' \
-    --host_cxxopt='-std=c++20'
+    --host_cxxopt='-std=c++20' \
+    --cxxopt='-DGITHUB_BUILD' \
+    --copt='-DGITHUB_BUILD'
 
-# 5. Run binary
+# 6. Run binary
 mkdir -p "$SCRIPT_DIR/received_files"
 cd "$SCRIPT_DIR"
 echo "Starting Discoverer & Receiver..."
