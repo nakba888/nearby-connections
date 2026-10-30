@@ -2,7 +2,7 @@
  * Google Nearby Connections C++ Discoverer & File Receiver (Raspberry Pi)
  * =======================================================================
  * Discovers smartphone Advertiser, establishes connection, accepts incoming
- * files (Payload::Type::kFile / kBytes), and saves them to received_files/ directory.
+ * files (PayloadType::kFile / kBytes), and saves them to received_files/ directory.
  */
 
 #include <chrono>
@@ -12,13 +12,18 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 
+#include "absl/strings/string_view.h"
 #include "connections/core.h"
 #include "connections/discovery_options.h"
+#include "connections/implementation/service_controller_router.h"
 #include "connections/listeners.h"
 #include "connections/params.h"
 #include "connections/payload.h"
+#include "connections/payload_type.h"
 #include "connections/strategy.h"
+#include "internal/platform/byte_array.h"
 
 namespace {
 // Target Service ID matching mobile app
@@ -38,97 +43,107 @@ int main(int argc, char* argv[]) {
   // Create destination directory if not existing
   std::filesystem::create_directories(kSaveDirectory);
 
-  // 1. Instantiate Nearby Connections Core
-  auto core = std::make_unique<nearby::connections::Core>();
+  // 1. Instantiate Core with ServiceControllerRouter
+  nearby::connections::ServiceControllerRouter router;
+  nearby::connections::Core core(&router);
 
-  // 2. Define Payload Listener for receiving files and byte streams
-  nearby::connections::PayloadListener payload_listener;
+  // Factory function for PayloadListener (move-only)
+  auto make_payload_listener = []() {
+    nearby::connections::PayloadListener listener;
 
-  payload_listener.payload_cb = [](const std::string& endpoint_id,
-                                   nearby::connections::Payload payload) {
-    std::cout << "\n[PAYLOAD RECEIVED] Endpoint: " << endpoint_id
-              << " | Payload ID: " << payload.GetId() << "\n";
+    listener.payload_cb = [](absl::string_view endpoint_id,
+                             nearby::connections::Payload payload) {
+      std::cout << "\n[PAYLOAD RECEIVED] Endpoint: " << endpoint_id
+                << " | Payload ID: " << payload.GetId() << "\n";
 
-    if (payload.GetType() == nearby::connections::Payload::Type::kFile) {
-      std::string dest_path = std::string(kSaveDirectory) + "/" +
-                              std::to_string(payload.GetId()) + ".file";
-      std::cout << "[FILE INCOMING] Type: File | Destination: " << dest_path << "\n";
-    } else if (payload.GetType() == nearby::connections::Payload::Type::kBytes) {
-      nearby::ByteArray bytes = payload.AsBytes();
-      std::string dest_path = std::string(kSaveDirectory) + "/payload_" +
-                              std::to_string(payload.GetId()) + ".bin";
-      std::ofstream out(dest_path, std::ios::binary);
-      if (out.is_open()) {
-        out.write(bytes.data(), bytes.size());
-        out.close();
-        std::cout << "[BYTES SAVED] Saved " << bytes.size()
-                  << " bytes to " << dest_path << "\n";
-      }
-    }
-  };
-
-  payload_listener.payload_progress_cb =
-      [](const std::string& endpoint_id,
-         const nearby::connections::PayloadProgressInfo& info) {
-        if (info.status == nearby::connections::PayloadProgressInfo::Status::kInProgress) {
-          if (info.total_bytes > 0) {
-            double pct = (100.0 * info.bytes_transferred) / info.total_bytes;
-            std::cout << "\r[TRANSFER PROGRESS] " << info.bytes_transferred
-                      << " / " << info.total_bytes << " bytes (" << static_cast<int>(pct)
-                      << "%)" << std::flush;
-          }
-        } else if (info.status == nearby::connections::PayloadProgressInfo::Status::kSuccess) {
-          std::cout << "\n[SUCCESS] File transfer completed for Payload ID: "
-                    << info.payload_id << "! Saved to " << kSaveDirectory << "/\n";
-        } else if (info.status == nearby::connections::PayloadProgressInfo::Status::kFailure) {
-          std::cerr << "\n[ERROR] Payload transfer failed for Payload ID: "
-                    << info.payload_id << "\n";
+      if (payload.GetType() == nearby::connections::PayloadType::kFile) {
+        std::string dest_path = std::string(kSaveDirectory) + "/" +
+                                std::to_string(payload.GetId()) + ".file";
+        std::cout << "[FILE INCOMING] Type: File | Destination: " << dest_path << "\n";
+      } else if (payload.GetType() == nearby::connections::PayloadType::kBytes) {
+        nearby::ByteArray bytes = payload.AsBytes();
+        std::string dest_path = std::string(kSaveDirectory) + "/payload_" +
+                                std::to_string(payload.GetId()) + ".bin";
+        std::ofstream out(dest_path, std::ios::binary);
+        if (out.is_open()) {
+          out.write(bytes.data(), bytes.size());
+          out.close();
+          std::cout << "[BYTES SAVED] Saved " << bytes.size()
+                    << " bytes to " << dest_path << "\n";
         }
-      };
+      }
+    };
 
-  // 3. Define Connection Lifecycle Listener
-  nearby::connections::ConnectionListener connection_listener;
+    listener.payload_progress_cb =
+        [](absl::string_view endpoint_id,
+           const nearby::connections::PayloadProgressInfo& info) {
+          if (info.status == nearby::connections::PayloadProgressInfo::Status::kInProgress) {
+            if (info.total_bytes > 0) {
+              double pct = (100.0 * info.bytes_transferred) / info.total_bytes;
+              std::cout << "\r[TRANSFER PROGRESS] " << info.bytes_transferred
+                        << " / " << info.total_bytes << " bytes (" << static_cast<int>(pct)
+                        << "%)" << std::flush;
+            }
+          } else if (info.status == nearby::connections::PayloadProgressInfo::Status::kSuccess) {
+            std::cout << "\n[SUCCESS] File transfer completed for Payload ID: "
+                      << info.payload_id << "! Saved to " << kSaveDirectory << "/\n";
+          } else if (info.status == nearby::connections::PayloadProgressInfo::Status::kFailure) {
+            std::cerr << "\n[ERROR] Payload transfer failed for Payload ID: "
+                      << info.payload_id << "\n";
+          }
+        };
 
-  connection_listener.initiated_cb =
-      [&](const std::string& endpoint_id,
-          const nearby::connections::ConnectionResponseInfo& info) {
-        std::cout << "\n[CONNECTION INITIATED] Endpoint: " << endpoint_id
-                  << " | Device: " << info.remote_endpoint_info.data()
-                  << " | Auth Token: " << info.authentication_token << "\n";
-
-        // Automatically accept connection to receive payloads
-        std::cout << "Accepting connection from " << endpoint_id << "...\n";
-        core->AcceptConnection(endpoint_id, payload_listener,
-                               [](nearby::connections::Status status) {
-                                 if (status.Ok()) {
-                                   std::cout << "AcceptConnection sent successfully.\n";
-                                 } else {
-                                   std::cerr << "Failed to accept connection: "
-                                             << status.value << "\n";
-                                 }
-                               });
-      };
-
-  connection_listener.accepted_cb = [](const std::string& endpoint_id) {
-    std::cout << "[CONNECTED] Security channel established with: "
-              << endpoint_id << "\nReady to receive files via sendPayload()!\n";
+    return listener;
   };
 
-  connection_listener.rejected_cb = [](const std::string& endpoint_id,
-                                        nearby::connections::Status status) {
-    std::cout << "[CONNECTION REJECTED] Endpoint: " << endpoint_id
-              << " | Status: " << status.value << "\n";
+  // Factory function for ConnectionListener (move-only)
+  auto make_connection_listener = [&core, &make_payload_listener]() {
+    nearby::connections::ConnectionListener listener;
+
+    listener.initiated_cb = [&core, &make_payload_listener](
+        const std::string& endpoint_id,
+        const nearby::connections::ConnectionResponseInfo& info) {
+      std::cout << "\n[CONNECTION INITIATED] Endpoint: " << endpoint_id
+                << " | Device: " << info.remote_endpoint_info.data()
+                << " | Auth Token: " << info.authentication_token << "\n";
+
+      // Automatically accept connection to receive payloads
+      std::cout << "Accepting connection from " << endpoint_id << "...\n";
+      core.AcceptConnection(endpoint_id, make_payload_listener(),
+                            [](nearby::connections::Status status) {
+                              if (status.Ok()) {
+                                std::cout << "AcceptConnection sent successfully.\n";
+                              } else {
+                                std::cerr << "Failed to accept connection: "
+                                          << status.value << "\n";
+                              }
+                            });
+    };
+
+    listener.accepted_cb = [](const std::string& endpoint_id) {
+      std::cout << "[CONNECTED] Security channel established with: "
+                << endpoint_id << "\nReady to receive files via sendPayload()!\n";
+    };
+
+    listener.rejected_cb = [](const std::string& endpoint_id,
+                              nearby::connections::Status status) {
+      std::cout << "[CONNECTION REJECTED] Endpoint: " << endpoint_id
+                << " | Status: " << status.value << "\n";
+    };
+
+    listener.disconnected_cb = [](const std::string& endpoint_id) {
+      std::cout << "[DISCONNECTED] Endpoint: " << endpoint_id << "\n";
+    };
+
+    return listener;
   };
 
-  connection_listener.disconnected_cb = [](const std::string& endpoint_id) {
-    std::cout << "[DISCONNECTED] Endpoint: " << endpoint_id << "\n";
-  };
-
-  // 4. Define Discovery Listener
+  // 2. Define Discovery Listener
   nearby::connections::DiscoveryListener discovery_listener;
 
   discovery_listener.endpoint_found_cb =
-      [&](const std::string& endpoint_id,
+      [&core, &make_connection_listener](
+          const std::string& endpoint_id,
           const nearby::ByteArray& endpoint_info,
           const std::string& service_id) {
         std::string info_str(endpoint_info);
@@ -143,38 +158,43 @@ int main(int argc, char* argv[]) {
         nearby::connections::ConnectionOptions connection_options;
         connection_options.strategy = nearby::connections::Strategy::kP2pStar;
 
+        nearby::connections::ConnectionRequestInfo req_info{
+            .endpoint_info = nearby::ByteArray{std::string(kDiscovererName)},
+            .listener = make_connection_listener(),
+        };
+
         std::cout << "Requesting connection to " << endpoint_id << "...\n";
-        core->RequestConnection(kDiscovererName, endpoint_id,
-                                connection_options, connection_listener,
-                                [](nearby::connections::Status status) {
-                                  if (!status.Ok()) {
-                                    std::cerr << "RequestConnection error: "
-                                              << status.value << "\n";
-                                  }
-                                });
+        core.RequestConnection(
+            endpoint_id, std::move(req_info), connection_options,
+            [](nearby::connections::Status status) {
+              if (!status.Ok()) {
+                std::cerr << "RequestConnection error: "
+                          << status.value << "\n";
+              }
+            });
       };
 
   discovery_listener.endpoint_lost_cb = [](const std::string& endpoint_id) {
     std::cout << "[ENDPOINT LOST] Out of range: " << endpoint_id << "\n";
   };
 
-  // 5. Start Discovery (P2P_STAR, BLE + Wi-Fi)
+  // 3. Start Discovery (P2P_STAR, BLE + Wi-Fi)
   nearby::connections::DiscoveryOptions discovery_options;
   discovery_options.strategy = nearby::connections::Strategy::kP2pStar;
   discovery_options.allowed.bluetooth = true;
   discovery_options.allowed.ble = true;
   discovery_options.allowed.wifi_lan = true;
 
-  core->StartDiscovery(kServiceId, discovery_options, discovery_listener,
-                       [](nearby::connections::Status status) {
-                         if (status.Ok()) {
-                           std::cout << "\nDiscovery started successfully.\n";
-                           std::cout << "Waiting for smartphone to advertise... (Stop: Ctrl+C)\n\n";
-                         } else {
-                           std::cerr << "StartDiscovery failed. Status: "
-                                     << status.value << "\n";
-                         }
-                       });
+  core.StartDiscovery(kServiceId, discovery_options, std::move(discovery_listener),
+                      [](nearby::connections::Status status) {
+                        if (status.Ok()) {
+                          std::cout << "\nDiscovery started successfully.\n";
+                          std::cout << "Waiting for smartphone to advertise... (Stop: Ctrl+C)\n\n";
+                        } else {
+                          std::cerr << "StartDiscovery failed. Status: "
+                                    << status.value << "\n";
+                        }
+                      });
 
   // Keep thread running
   while (true) {
@@ -182,6 +202,6 @@ int main(int argc, char* argv[]) {
   }
 
   // Stop Discovery on exit
-  core->StopDiscovery([](nearby::connections::Status) {});
+  core.StopDiscovery([](nearby::connections::Status) {});
   return 0;
 }
