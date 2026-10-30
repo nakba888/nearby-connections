@@ -41,8 +41,8 @@ git commit -m "feat: 라즈베리파이 Nearby Connections 디텍터 및 스마�
 # 2. 기본 브랜치를 main으로 설정
 git branch -M main
 
-# 3. 본인의 GitHub 저장소 주소 연결 (YOUR_USERNAME, REPO_NAME 변경)
-git remote add origin https://github.com/YOUR_USERNAME/REPO_NAME.git
+# 3. 본인의 GitHub 저장소 주소 연결
+git remote add origin https://github.com/nakba888/nearby-connections.git
 
 # 4. 깃허브에 푸시
 git push -u origin main
@@ -56,8 +56,8 @@ git push -u origin main
 
 ```bash
 # 1. 깃허브에서 프로젝트 클론 (다운로드)
-git clone https://github.com/YOUR_USERNAME/REPO_NAME.git
-cd REPO_NAME
+git clone https://github.com/nakba888/nearby-connections.git
+cd nearby-connections
 
 # 2. 실행 권한 부여 및 원클릭 환경 설치
 chmod +x setup_rpi.sh python/run_scanner.sh
