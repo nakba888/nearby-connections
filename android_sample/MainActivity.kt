@@ -25,7 +25,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "NearbyAdvertiser"
         // 라즈베리파이와 동일해야 하는 Service ID
-        const val SERVICE_ID = "com.example.nearby.detector"
+        const val SERVICE_ID = "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID"
         private const val REQUEST_CODE_PERMISSIONS = 1001
     }
 

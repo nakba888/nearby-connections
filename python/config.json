@@ -1,5 +1,5 @@
 {
-  "service_id": "com.example.nearby.detector",
+  "service_id": "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID",
   "scan_all_google_nearby": true,
   "custom_service_uuids": [
     "0000fef3-0000-1000-8000-00805f9b34fb",

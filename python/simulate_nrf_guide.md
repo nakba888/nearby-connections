@@ -23,7 +23,7 @@
    - **방법 A: Google Nearby 형식 테스트 (권장)**
      - 데이터 종류: **Service Data** 선택
      - **Service UUID**: `FEF3` 입력 (Google 16-bit UUID)
-     - **Data**: `20 1A 2B 3C` 등 원하는 16진수 입력 (예: `20`은 헤더, `1A 2B 3C`는 Service ID 해시값)
+     - **Data**: `20 54 A2 3D` (헤더 `20` + Service ID 해시값 `54 A2 3D`) -> 라즈베리파이가 설정된 Service ID로 즉시 일치 판정합니다!
    - **방법 B: 커스텀 UUID 테스트**
      - 데이터 종류: **Service UUID (128-bit)** 선택
      - UUID: `12345678-1234-5678-1234-56789abcdef0` 입력 (`config.json`에 등록된 커스텀 UUID)

@@ -19,7 +19,7 @@
 
 namespace {
 // 스마트폰 앱과 동일하게 지정해야 하는 Service ID
-constexpr char kServiceId[] = "com.example.nearby.detector";
+constexpr char kServiceId[] = "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID";
 constexpr char kDiscovererName[] = "RaspberryPi-Gate";
 }  // namespace
 

@@ -83,7 +83,7 @@ cd python
 
 ### 방법 B: 안드로이드 네이티브 앱 제작
 - `android_sample/` 폴더의 코드(`MainActivity.kt`)를 Android Studio 프로젝트에 넣어 빌드합니다.
-- 스마트폰에서 앱을 켜고 **송출 시작**을 누르면 동일한 `com.example.nearby.detector` Service ID로 Advertising이 시작됩니다.
+- 스마트폰에서 앱을 켜고 **송출 시작**을 누르면 동일한 `com.atec.mobility.k.hero.nearby.connections.SERVICE_ID`로 Advertising이 시작됩니다.
 
 ---
 
@@ -91,7 +91,7 @@ cd python
 
 ```json
 {
-  "service_id": "com.example.nearby.detector",  // 통신할 서비스 ID
+  "service_id": "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID",  // 통신할 서비스 ID
   "rssi_threshold": -85,                        // 신호 감도 필터 (-60: 1m 이내, -85: 약 5~7m)
   "detection_cooldown_seconds": 3,              // 동일 기기 중복 출력 방지 쿨다운 (초)
   "log_to_file": true,                          // detections.log 파일 저장 여부

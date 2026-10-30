@@ -43,7 +43,7 @@ MAGENTA = "\033[95m"
 
 def load_config(config_path: str = "config.json") -> dict:
     default_config = {
-        "service_id": "com.example.nearby.detector",
+        "service_id": "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID",
         "scan_all_google_nearby": True,
         "custom_service_uuids": [
             "0000fef3-0000-1000-8000-00805f9b34fb",
@@ -87,7 +87,7 @@ def estimate_distance(rssi: int, tx_power: int = -59) -> str:
 class NearbyDiscoverer:
     def __init__(self, config: dict):
         self.config = config
-        self.service_id = config.get("service_id", "com.example.nearby.detector")
+        self.service_id = config.get("service_id", "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID")
         self.service_id_hash = compute_service_id_hash(self.service_id)
         self.rssi_threshold = config.get("rssi_threshold", -85)
         self.cooldown = config.get("detection_cooldown_seconds", 3)
