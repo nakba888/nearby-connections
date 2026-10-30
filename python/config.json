@@ -1,0 +1,13 @@
+{
+  "service_id": "com.example.nearby.detector",
+  "scan_all_google_nearby": true,
+  "custom_service_uuids": [
+    "0000fef3-0000-1000-8000-00805f9b34fb",
+    "12345678-1234-5678-1234-56789abcdef0"
+  ],
+  "rssi_threshold": -85,
+  "detection_cooldown_seconds": 3,
+  "log_to_file": true,
+  "log_file": "detections.log",
+  "trigger_command": ""
+}

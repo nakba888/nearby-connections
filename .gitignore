@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C++ build artifacts
+bazel-*
+build/
+bin/
+*.o
+*.so
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Logs
+*.log
+detections.log
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
