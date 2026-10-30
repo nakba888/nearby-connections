@@ -6,7 +6,9 @@
     "12345678-1234-5678-1234-56789abcdef0"
   ],
   "rssi_threshold": -85,
-  "detection_cooldown_seconds": 3,
+  "update_interval_seconds": 10,
+  "rssi_delta_threshold": 5,
+  "timeout_seconds": 15,
   "log_to_file": true,
   "log_file": "detections.log",
   "trigger_command": ""

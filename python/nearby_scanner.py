@@ -4,6 +4,7 @@ Nearby Connections BLE Discoverer / Scanner for Raspberry Pi
 ============================================================
 Scans for BLE advertising packets emitted by smartphones using
 Google Nearby Connections (UUID: 0xFEF3) or specified Service UUIDs.
+Features session tracking, debounce filtering, and clean ASCII logging.
 """
 
 import asyncio
@@ -49,7 +50,9 @@ def load_config(config_path: str = "config.json") -> dict:
             "12345678-1234-5678-1234-56789abcdef0",
         ],
         "rssi_threshold": -85,
-        "detection_cooldown_seconds": 3,
+        "update_interval_seconds": 10,
+        "rssi_delta_threshold": 5,
+        "timeout_seconds": 15,
         "log_to_file": True,
         "log_file": "detections.log",
         "trigger_command": "",
@@ -71,7 +74,7 @@ def compute_service_id_hash(service_id: str) -> bytes:
     return sha.digest()
 
 
-def estimate_distance(rssi: int, tx_power: int = -59) -> str:
+def estimate_distance(rssi: int) -> str:
     """Rough distance estimate based on RSSI"""
     if rssi >= -60:
         return f"{GREEN}Immediate (< 1m){RESET}"
@@ -91,8 +94,12 @@ class NearbyDiscoverer:
         )
         self.service_id_hash = compute_service_id_hash(self.service_id)
         self.rssi_threshold = config.get("rssi_threshold", -85)
-        self.cooldown = config.get("detection_cooldown_seconds", 3)
-        self.last_seen: Dict[str, float] = {}
+        self.update_interval = config.get("update_interval_seconds", 10)
+        self.rssi_delta = config.get("rssi_delta_threshold", 5)
+        self.timeout_seconds = config.get("timeout_seconds", 15)
+
+        # Active devices: addr -> session dict
+        self.active_devices: Dict[str, dict] = {}
         self.log_file = config.get("log_file", "detections.log")
         self.log_to_file = config.get("log_to_file", True)
 
@@ -123,7 +130,6 @@ class NearbyDiscoverer:
         if len(raw_data) < 4:
             return info
 
-        # Byte 0: Header / Version / Type
         # Bytes 1-3: Service ID Hash (3 bytes)
         payload_hash = raw_data[1:4]
         if payload_hash == self.service_id_hash[:3]:
@@ -132,9 +138,9 @@ class NearbyDiscoverer:
         # Bytes 4-7: 4-byte Endpoint ID
         if len(raw_data) >= 8:
             try:
-                endpoint_id_candidate = raw_data[4:8].decode("ascii")
-                if endpoint_id_candidate.isalnum():
-                    info["endpoint_id"] = endpoint_id_candidate
+                candidate = raw_data[4:8].decode("ascii")
+                if candidate.isalnum():
+                    info["endpoint_id"] = candidate
             except Exception:
                 pass
 
@@ -157,8 +163,6 @@ class NearbyDiscoverer:
 
         now = time.time()
         addr = device.address
-        if addr in self.last_seen and (now - self.last_seen[addr]) < self.cooldown:
-            return
 
         # 1. Check Google Nearby UUID (0xFEF3)
         is_google_nearby = False
@@ -192,54 +196,116 @@ class NearbyDiscoverer:
         if not is_google_nearby and not is_custom_matched:
             return
 
-        # 3. Format detection output
-        self.last_seen[addr] = now
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         device_name = adv.local_name or device.name or "Unknown Device"
-        proximity = estimate_distance(rssi)
+        parsed_info = self.parse_nearby_payload(nearby_service_data) if nearby_service_data else None
 
-        print("\n" + "=" * 65)
-        if is_google_nearby:
-            print(f"{BOLD}{GREEN}[DETECTED] Google Nearby Connections Signal{RESET}")
+        # 3. Session Tracking (Avoid Flooding)
+        is_new_device = addr not in self.active_devices
+
+        if is_new_device:
+            # First time seeing this device: Display detailed block
+            self.active_devices[addr] = {
+                "first_seen": now,
+                "last_seen": now,
+                "last_logged_time": now,
+                "last_logged_rssi": rssi,
+                "name": device_name,
+                "endpoint_id": parsed_info.get("endpoint_id") if parsed_info else None,
+                "endpoint_info": parsed_info.get("endpoint_info") if parsed_info else None,
+                "packet_count": 1,
+            }
+
+            timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+            proximity = estimate_distance(rssi)
+
+            print("\n" + "=" * 65)
+            if is_google_nearby:
+                print(f"{BOLD}{GREEN}[NEW DEVICE DETECTED] Google Nearby Connections{RESET}")
+            else:
+                print(f"{BOLD}{CYAN}[NEW DEVICE DETECTED] Custom BLE Service{RESET} ({matched_custom_uuid})")
+
+            print(f"Time: {timestamp} | MAC: {BOLD}{addr}{RESET} | Name: {device_name}")
+            print(f"RSSI: {BOLD}{rssi} dBm{RESET} ({proximity})")
+
+            if parsed_info:
+                if parsed_info.get("endpoint_id"):
+                    print(f"Endpoint ID: {BOLD}{parsed_info['endpoint_id']}{RESET}")
+                if parsed_info.get("endpoint_info"):
+                    print(f"Endpoint Info: {parsed_info['endpoint_info']}")
+                if parsed_info.get("hex"):
+                    print(f"Payload Hex: {parsed_info['hex']}")
+                if parsed_info.get("matched_service_id"):
+                    print(f"[MATCH] {GREEN}Target Service ID matched!{RESET} ({self.service_id})")
+
+            print("=" * 65)
+
+            # Log to file
+            log_msg = f"NEW_DEVICE | MAC={addr} | RSSI={rssi} | Name={device_name}"
+            if parsed_info and parsed_info.get("endpoint_id"):
+                log_msg += f" | Endpoint={parsed_info['endpoint_id']}"
+            self.log_event(log_msg)
+
+            # Trigger external command if configured
+            cmd = self.config.get("trigger_command", "").strip()
+            if cmd:
+                try:
+                    env = os.environ.copy()
+                    env["NEARBY_MAC"] = str(addr)
+                    env["NEARBY_RSSI"] = str(rssi)
+                    env["NEARBY_NAME"] = str(device_name)
+                    if parsed_info and parsed_info.get("endpoint_id"):
+                        env["NEARBY_ENDPOINT"] = str(parsed_info["endpoint_id"])
+                    subprocess.Popen(cmd, shell=True, env=env)
+                except Exception as e:
+                    print(f"[WARN] Failed to run trigger command: {e}")
+
         else:
-            print(f"{BOLD}{CYAN}[DETECTED] Custom BLE Service Signal{RESET} (UUID: {matched_custom_uuid})")
+            # Device already known: update stats
+            dev = self.active_devices[addr]
+            dev["last_seen"] = now
+            dev["packet_count"] += 1
+            if parsed_info and parsed_info.get("endpoint_id"):
+                dev["endpoint_id"] = parsed_info["endpoint_id"]
 
-        print(f"Time: {timestamp} | MAC: {BOLD}{addr}{RESET} | Name: {device_name}")
-        print(f"RSSI: {BOLD}{rssi} dBm{RESET} ({proximity})")
+            time_since_last_log = now - dev["last_logged_time"]
+            rssi_diff = abs(rssi - dev["last_logged_rssi"])
 
-        parsed_info = None
-        if nearby_service_data:
-            parsed_info = self.parse_nearby_payload(nearby_service_data)
-            print(f"Service Data Hex: {parsed_info['hex']}")
-            if parsed_info["matched_service_id"]:
-                print(f"[MATCH] {GREEN}Target Service ID Matched!{RESET} ({self.service_id})")
-            if parsed_info["endpoint_id"]:
-                print(f"Endpoint ID: {parsed_info['endpoint_id']}")
-            if parsed_info["endpoint_info"]:
-                print(f"Endpoint Info: {parsed_info['endpoint_info']}")
-        elif adv.manufacturer_data:
-            mfg_hex = " ".join(f"{k}: {v.hex()}" for k, v in adv.manufacturer_data.items())
-            print(f"Manufacturer Data: {mfg_hex}")
+            # Print single-line update only if 10 seconds elapsed OR RSSI changed significantly (>= 5 dBm)
+            if time_since_last_log >= self.update_interval or rssi_diff >= self.rssi_delta:
+                dev["last_logged_time"] = now
+                dev["last_logged_rssi"] = rssi
+                duration = int(now - dev["first_seen"])
+                proximity = estimate_distance(rssi)
+                timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
-        print("=" * 65)
+                ep_tag = f" (Endpoint: {dev['endpoint_id']})" if dev.get("endpoint_id") else ""
+                print(
+                    f"[{timestamp}] [TRACKING] MAC: {BOLD}{addr}{RESET}{ep_tag} | "
+                    f"RSSI: {BOLD}{rssi} dBm{RESET} ({proximity}) | "
+                    f"In range: {duration}s"
+                )
 
-        # Log event
-        log_msg = f"DETECTED | MAC={addr} | RSSI={rssi} | Name={device_name}"
-        if parsed_info and parsed_info.get("hex"):
-            log_msg += f" | Payload={parsed_info['hex']}"
-        self.log_event(log_msg)
+    async def cleanup_loop(self):
+        """Check for devices that stopped transmitting and notify exit"""
+        while True:
+            await asyncio.sleep(2)
+            now = time.time()
+            to_remove = []
 
-        # Trigger external command if configured
-        cmd = self.config.get("trigger_command", "").strip()
-        if cmd:
-            try:
-                env = os.environ.copy()
-                env["NEARBY_MAC"] = str(addr)
-                env["NEARBY_RSSI"] = str(rssi)
-                env["NEARBY_NAME"] = str(device_name)
-                subprocess.Popen(cmd, shell=True, env=env)
-            except Exception as e:
-                print(f"[WARN] Failed to run trigger command: {e}")
+            for addr, dev in list(self.active_devices.items()):
+                if (now - dev["last_seen"]) > self.timeout_seconds:
+                    to_remove.append(addr)
+                    duration = int(now - dev["first_seen"])
+                    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+                    ep_tag = f" (Endpoint: {dev['endpoint_id']})" if dev.get("endpoint_id") else ""
+                    print(
+                        f"[{timestamp}] {YELLOW}[DEVICE LEFT]{RESET} MAC: {BOLD}{addr}{RESET}{ep_tag} | "
+                        f"Was in range for: {duration}s"
+                    )
+                    self.log_event(f"DEVICE_LEFT | MAC={addr} | Duration={duration}s")
+
+            for addr in to_remove:
+                self.active_devices.pop(addr, None)
 
 
 async def main():
@@ -252,6 +318,8 @@ async def main():
     print(f"- Target Service ID: {BOLD}{discoverer.service_id}{RESET}")
     print(f"- Service ID Hash Prefix: {discoverer.service_id_hash[:3].hex().upper()}")
     print(f"- RSSI Sensitivity Filter: >= {discoverer.rssi_threshold} dBm")
+    print(f"- Update Interval: {discoverer.update_interval}s (or RSSI delta >= {discoverer.rssi_delta} dBm)")
+    print(f"- Device Departure Timeout: {discoverer.timeout_seconds}s")
     print(f"- Log File: {discoverer.log_file}")
     print("Scanning for smartphone advertising packets... (Stop: Ctrl+C)\n")
 
@@ -260,6 +328,8 @@ async def main():
         scanning_mode="active",
     )
 
+    cleanup_task = asyncio.create_task(discoverer.cleanup_loop())
+
     try:
         await scanner.start()
         while True:
@@ -267,6 +337,7 @@ async def main():
     except asyncio.CancelledError:
         pass
     finally:
+        cleanup_task.cancel()
         await scanner.stop()
         print(f"\n{YELLOW}Scanner stopped cleanly.{RESET}")
 
