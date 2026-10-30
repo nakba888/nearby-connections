@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==========================================================
-# 라즈베리파이 Nearby Scanner 실행 스크립트
+# Raspberry Pi Nearby Scanner Runner Script
 # ==========================================================
 
 set -e
@@ -8,29 +8,29 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "=== 라즈베리파이 Nearby Scanner 시작 준비 ==="
+echo "=== Preparing Raspberry Pi Nearby Scanner ==="
 
-# 1. 블루투스 상태 점검
+# 1. Check and start Bluetooth service
 if command -v systemctl >/dev/null 2>&1; then
     sudo systemctl start bluetooth || true
 fi
 
-# 2. 파이썬 가상환경(venv) 생성 및 활성화
+# 2. Virtual environment setup
 if [ ! -d "venv" ]; then
-    echo "[1/3] 파이썬 가상환경(venv) 생성 중..."
+    echo "[1/3] Creating Python venv..."
     python3 -m venv venv --system-site-packages || {
-        echo "python3-venv가 필요합니다: sudo apt-get update && sudo apt-get install -y python3-venv python3-pip"
+        echo "python3-venv is required: sudo apt-get update && sudo apt-get install -y python3-venv python3-pip"
         exit 1
     }
 fi
 
 source venv/bin/activate
 
-# 3. 필수 라이브러리 설치/확인
-echo "[2/3] 의존성 패키지 확인 중..."
+# 3. Check and install dependencies
+echo "[2/3] Checking dependencies..."
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
-# 4. 스캐너 실행
-echo "[3/3] Nearby Scanner 실행 중..."
+# 4. Run Scanner
+echo "[3/3] Starting Nearby Scanner..."
 python3 nearby_scanner.py

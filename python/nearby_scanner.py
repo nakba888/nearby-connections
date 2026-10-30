@@ -2,9 +2,8 @@
 """
 Nearby Connections BLE Discoverer / Scanner for Raspberry Pi
 ============================================================
-이 스크립트는 라즈베리파이(또는 PC)에서 BLE 스캐너를 실행하여
-스마트폰이 Google Nearby Connections (UUID: 0xFEF3) 또는
-지정한 Service UUID로 송출(Advertising)하는 신호를 감지(Discover)합니다.
+Scans for BLE advertising packets emitted by smartphones using
+Google Nearby Connections (UUID: 0xFEF3) or specified Service UUIDs.
 """
 
 import asyncio
@@ -22,8 +21,8 @@ try:
     from bleak.backends.device import BLEDevice
     from bleak.backends.scanner import AdvertisementData
 except ImportError:
-    print("\n[오류] 'bleak' 패키지가 설치되지 않았습니다.")
-    print("다음 명령어로 설치 후 다시 실행해주세요:")
+    print("\n[ERROR] 'bleak' package is not installed.")
+    print("Please install dependencies:")
     print("    pip install -r requirements.txt\n")
     sys.exit(1)
 
@@ -31,7 +30,7 @@ except ImportError:
 GOOGLE_NEARBY_UUID_16 = "0000fef3-0000-1000-8000-00805f9b34fb"
 SHORT_FEF3 = "fef3"
 
-# ANSI 컬러 코드
+# ANSI Color Codes
 RESET = "\033[0m"
 BOLD = "\033[1m"
 GREEN = "\033[92m"
@@ -61,33 +60,35 @@ def load_config(config_path: str = "config.json") -> dict:
                 cfg = json.load(f)
                 default_config.update(cfg)
         except Exception as e:
-            print(f"[경고] 설정 파일 로드 실패({e}), 기본 설정을 사용합니다.")
+            print(f"[WARN] Failed to load config ({e}). Using defaults.")
     return default_config
 
 
 def compute_service_id_hash(service_id: str) -> bytes:
-    """Nearby Connections 표준: Service ID 문자열의 SHA-256 해시값 (첫 3~4바이트)"""
+    """Nearby Connections standard: SHA-256 hash of Service ID string (first 3-4 bytes)"""
     sha = hashlib.sha256()
     sha.update(service_id.encode("utf-8"))
     return sha.digest()
 
 
 def estimate_distance(rssi: int, tx_power: int = -59) -> str:
-    """RSSI 신호 세기를 바탕으로 대략적인 근접도 표시"""
+    """Rough distance estimate based on RSSI"""
     if rssi >= -60:
-        return f"{GREEN}매우 가까움 (1m 이내){RESET}"
+        return f"{GREEN}Immediate (< 1m){RESET}"
     elif rssi >= -75:
-        return f"{YELLOW}근접 (1~3m 내외){RESET}"
+        return f"{YELLOW}Near (1-3m){RESET}"
     elif rssi >= -85:
-        return f"{CYAN}보통 (3~7m 내외){RESET}"
+        return f"{CYAN}Normal (3-7m){RESET}"
     else:
-        return f"{MAGENTA}먼 거리 (7m 이상){RESET}"
+        return f"{MAGENTA}Far (> 7m){RESET}"
 
 
 class NearbyDiscoverer:
     def __init__(self, config: dict):
         self.config = config
-        self.service_id = config.get("service_id", "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID")
+        self.service_id = config.get(
+            "service_id", "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID"
+        )
         self.service_id_hash = compute_service_id_hash(self.service_id)
         self.rssi_threshold = config.get("rssi_threshold", -85)
         self.cooldown = config.get("detection_cooldown_seconds", 3)
@@ -95,7 +96,7 @@ class NearbyDiscoverer:
         self.log_file = config.get("log_file", "detections.log")
         self.log_to_file = config.get("log_to_file", True)
 
-        # 타겟 UUID 정규화
+        # Normalize target UUIDs
         self.custom_uuids = [
             u.lower() for u in config.get("custom_service_uuids", [])
         ]
@@ -108,10 +109,10 @@ class NearbyDiscoverer:
             with open(self.log_file, "a", encoding="utf-8") as f:
                 f.write(f"[{timestamp}] {text}\n")
         except Exception as e:
-            print(f"[오류] 로그 저장 실패: {e}")
+            print(f"[ERROR] Failed to write log: {e}")
 
     def parse_nearby_payload(self, raw_data: bytes) -> dict:
-        """Nearby Connections 0xFEF3 Service Data 파싱 시도"""
+        """Parse Nearby Connections 0xFEF3 Service Data"""
         info = {
             "hex": raw_data.hex(),
             "matched_service_id": False,
@@ -122,13 +123,13 @@ class NearbyDiscoverer:
         if len(raw_data) < 4:
             return info
 
-        # 첫 바이트: 헤더/버전/타입
-        # 바이트 1~3: Service ID Hash (3 bytes)
+        # Byte 0: Header / Version / Type
+        # Bytes 1-3: Service ID Hash (3 bytes)
         payload_hash = raw_data[1:4]
         if payload_hash == self.service_id_hash[:3]:
             info["matched_service_id"] = True
 
-        # 바이트 4~7: 4바이트 Endpoint ID (알파뉴메릭)
+        # Bytes 4-7: 4-byte Endpoint ID
         if len(raw_data) >= 8:
             try:
                 endpoint_id_candidate = raw_data[4:8].decode("ascii")
@@ -137,10 +138,9 @@ class NearbyDiscoverer:
             except Exception:
                 pass
 
-        # 남은 바이트에서 UTF-8 텍스트(기기 이름 또는 전달 정보) 추출 시도
+        # Remaining bytes: Endpoint Info
         if len(raw_data) > 8:
             try:
-                # 텍스트 추출 (출력 가능한 글자 위주)
                 text = raw_data[8:].decode("utf-8", errors="ignore").strip()
                 printable = "".join(c for c in text if c.isprintable())
                 if len(printable) >= 2:
@@ -160,11 +160,10 @@ class NearbyDiscoverer:
         if addr in self.last_seen and (now - self.last_seen[addr]) < self.cooldown:
             return
 
-        # 1. Google Nearby UUID (0xFEF3) 확인
+        # 1. Check Google Nearby UUID (0xFEF3)
         is_google_nearby = False
         nearby_service_data: Optional[bytes] = None
 
-        # service_data 딕셔너리 키 검사
         for uuid_key, data in adv.service_data.items():
             uuid_str = str(uuid_key).lower()
             if SHORT_FEF3 in uuid_str or uuid_str == GOOGLE_NEARBY_UUID_16:
@@ -172,14 +171,13 @@ class NearbyDiscoverer:
                 nearby_service_data = data
                 break
 
-        # service_uuids 리스트 검사
         for s_uuid in adv.service_uuids:
             s_uuid_lower = s_uuid.lower()
             if SHORT_FEF3 in s_uuid_lower or s_uuid_lower == GOOGLE_NEARBY_UUID_16:
                 is_google_nearby = True
                 break
 
-        # 2. 커스텀 UUID 매칭 확인 (nRF Connect 등 수동 테스트용)
+        # 2. Check Custom UUID match
         is_custom_matched = False
         matched_custom_uuid = ""
         for c_uuid in self.custom_uuids:
@@ -191,48 +189,47 @@ class NearbyDiscoverer:
             if is_custom_matched:
                 break
 
-        # 둘 다 아니면 무시
         if not is_google_nearby and not is_custom_matched:
             return
 
-        # 3. 신호 해석
+        # 3. Format detection output
         self.last_seen[addr] = now
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-
-        device_name = adv.local_name or device.name or "알 수 없는 기기"
+        device_name = adv.local_name or device.name or "Unknown Device"
         proximity = estimate_distance(rssi)
 
         print("\n" + "=" * 65)
         if is_google_nearby:
-            print(f"{BOLD}{GREEN}📡 [Google Nearby Connections 신호 감지!]{RESET}")
+            print(f"{BOLD}{GREEN}[DETECTED] Google Nearby Connections Signal{RESET}")
         else:
-            print(f"{BOLD}{CYAN}📡 [커스텀 BLE 서비스 신호 감지!]{RESET} (UUID: {matched_custom_uuid})")
-        print(f"⏰ 시간: {timestamp} | 📍 MAC: {BOLD}{addr}{RESET} | 🏷 이름: {device_name}")
-        print(f"📶 신호세기(RSSI): {BOLD}{rssi} dBm{RESET} ({proximity})")
+            print(f"{BOLD}{CYAN}[DETECTED] Custom BLE Service Signal{RESET} (UUID: {matched_custom_uuid})")
+
+        print(f"Time: {timestamp} | MAC: {BOLD}{addr}{RESET} | Name: {device_name}")
+        print(f"RSSI: {BOLD}{rssi} dBm{RESET} ({proximity})")
 
         parsed_info = None
         if nearby_service_data:
             parsed_info = self.parse_nearby_payload(nearby_service_data)
-            print(f"📦 Service Data Hex: {parsed_info['hex']}")
+            print(f"Service Data Hex: {parsed_info['hex']}")
             if parsed_info["matched_service_id"]:
-                print(f"🎯 {GREEN}설정한 Service ID와 정확히 일치합니다!{RESET} ({self.service_id})")
+                print(f"[MATCH] {GREEN}Target Service ID Matched!{RESET} ({self.service_id})")
             if parsed_info["endpoint_id"]:
-                print(f"🔑 Endpoint ID: {parsed_info['endpoint_id']}")
+                print(f"Endpoint ID: {parsed_info['endpoint_id']}")
             if parsed_info["endpoint_info"]:
-                print(f"📝 Endpoint Info: {parsed_info['endpoint_info']}")
+                print(f"Endpoint Info: {parsed_info['endpoint_info']}")
         elif adv.manufacturer_data:
             mfg_hex = " ".join(f"{k}: {v.hex()}" for k, v in adv.manufacturer_data.items())
-            print(f"🏭 Manufacturer Data: {mfg_hex}")
+            print(f"Manufacturer Data: {mfg_hex}")
 
         print("=" * 65)
 
-        # 로그 기록
+        # Log event
         log_msg = f"DETECTED | MAC={addr} | RSSI={rssi} | Name={device_name}"
         if parsed_info and parsed_info.get("hex"):
             log_msg += f" | Payload={parsed_info['hex']}"
         self.log_event(log_msg)
 
-        # 외부 트리거 실행 (설정된 경우)
+        # Trigger external command if configured
         cmd = self.config.get("trigger_command", "").strip()
         if cmd:
             try:
@@ -242,7 +239,7 @@ class NearbyDiscoverer:
                 env["NEARBY_NAME"] = str(device_name)
                 subprocess.Popen(cmd, shell=True, env=env)
             except Exception as e:
-                print(f"[경고] 트리거 명령어 실행 실패: {e}")
+                print(f"[WARN] Failed to run trigger command: {e}")
 
 
 async def main():
@@ -250,13 +247,13 @@ async def main():
     discoverer = NearbyDiscoverer(config)
 
     print(f"\n{BOLD}{CYAN}=========================================================={RESET}")
-    print(f"{BOLD}{CYAN}   라즈베리파이 Nearby Connections BLE 탐색기 (Discoverer){RESET}")
+    print(f"{BOLD}{CYAN}   Raspberry Pi Nearby Connections BLE Discoverer{RESET}")
     print(f"{BOLD}{CYAN}=========================================================={RESET}")
-    print(f"• 설정된 Service ID: {BOLD}{discoverer.service_id}{RESET}")
-    print(f"• Service ID Hash(Prefix): {discoverer.service_id_hash[:3].hex().upper()}")
-    print(f"• RSSI 감도 필터: {discoverer.rssi_threshold} dBm 이상")
-    print(f"• 로그 파일: {discoverer.log_file}")
-    print("스마트폰의 Advertising 신호를 실시간 스캔 중입니다... (종료: Ctrl+C)\n")
+    print(f"- Target Service ID: {BOLD}{discoverer.service_id}{RESET}")
+    print(f"- Service ID Hash Prefix: {discoverer.service_id_hash[:3].hex().upper()}")
+    print(f"- RSSI Sensitivity Filter: >= {discoverer.rssi_threshold} dBm")
+    print(f"- Log File: {discoverer.log_file}")
+    print("Scanning for smartphone advertising packets... (Stop: Ctrl+C)\n")
 
     scanner = BleakScanner(
         detection_callback=discoverer.handle_detection,
@@ -271,11 +268,11 @@ async def main():
         pass
     finally:
         await scanner.stop()
-        print(f"\n{YELLOW}스캐너가 안전하게 종료되었습니다.{RESET}")
+        print(f"\n{YELLOW}Scanner stopped cleanly.{RESET}")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print(f"\n{YELLOW}프로그램을 종료합니다.{RESET}")
+        print(f"\n{YELLOW}Scanner terminated by user.{RESET}")
