@@ -4,7 +4,7 @@ Nearby Connections BLE Discoverer / Scanner for Raspberry Pi
 ============================================================
 Scans for BLE advertising packets emitted by smartphones using
 Google Nearby Connections (UUID: 0xFEF3) or specified Service UUIDs.
-Features session tracking, debounce filtering, and clean ASCII logging.
+Features session tracking, background noise filtering, and clean ASCII logging.
 """
 
 import asyncio
@@ -15,7 +15,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 try:
     from bleak import BleakScanner
@@ -44,14 +44,16 @@ MAGENTA = "\033[95m"
 def load_config(config_path: str = "config.json") -> dict:
     default_config = {
         "service_id": "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID",
-        "scan_all_google_nearby": True,
+        "only_nearby_connections_endpoints": True,
+        "target_endpoint_ids": [],
+        "scan_all_google_nearby": False,
         "custom_service_uuids": [
-            "0000fef3-0000-1000-8000-00805f9b34fb",
-            "12345678-1234-5678-1234-56789abcdef0",
+            "0000fef3-0000-1000-8000-00805f9b34fb"
         ],
-        "rssi_threshold": -85,
+        "rssi_threshold": -80,
         "update_interval_seconds": 10,
-        "rssi_delta_threshold": 5,
+        "min_log_interval_seconds": 5,
+        "rssi_delta_threshold": 8,
         "timeout_seconds": 15,
         "log_to_file": True,
         "log_file": "detections.log",
@@ -93,9 +95,16 @@ class NearbyDiscoverer:
             "service_id", "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID"
         )
         self.service_id_hash = compute_service_id_hash(self.service_id)
-        self.rssi_threshold = config.get("rssi_threshold", -85)
+        self.only_nearby_endpoints = config.get("only_nearby_connections_endpoints", True)
+        self.target_endpoints: List[str] = [
+            ep.upper() for ep in config.get("target_endpoint_ids", [])
+        ]
+        self.scan_all_google = config.get("scan_all_google_nearby", False)
+
+        self.rssi_threshold = config.get("rssi_threshold", -80)
         self.update_interval = config.get("update_interval_seconds", 10)
-        self.rssi_delta = config.get("rssi_delta_threshold", 5)
+        self.min_log_interval = config.get("min_log_interval_seconds", 5)
+        self.rssi_delta = config.get("rssi_delta_threshold", 8)
         self.timeout_seconds = config.get("timeout_seconds", 15)
 
         # Active devices: addr -> session dict
@@ -139,10 +148,21 @@ class NearbyDiscoverer:
         if len(raw_data) >= 8:
             try:
                 candidate = raw_data[4:8].decode("ascii")
-                if candidate.isalnum():
+                if candidate.isalnum() and len(candidate) == 4:
                     info["endpoint_id"] = candidate
             except Exception:
                 pass
+
+        # Fallback scan for 4-char alphanumeric endpoint in the payload
+        if not info["endpoint_id"] and len(raw_data) >= 8:
+            for offset in range(1, min(10, len(raw_data) - 4)):
+                try:
+                    candidate = raw_data[offset : offset + 4].decode("ascii")
+                    if candidate.isalnum() and len(candidate) == 4 and candidate.isupper():
+                        info["endpoint_id"] = candidate
+                        break
+                except Exception:
+                    pass
 
         # Remaining bytes: Endpoint Info
         if len(raw_data) > 8:
@@ -196,14 +216,27 @@ class NearbyDiscoverer:
         if not is_google_nearby and not is_custom_matched:
             return
 
-        device_name = adv.local_name or device.name or "Unknown Device"
         parsed_info = self.parse_nearby_payload(nearby_service_data) if nearby_service_data else None
 
-        # 3. Session Tracking (Avoid Flooding)
+        # 3. Noise Filter: Ignore background beacons (earbuds/watches) that are not Nearby Connections
+        if is_google_nearby and self.only_nearby_endpoints:
+            if not parsed_info or not parsed_info.get("endpoint_id"):
+                # No valid Nearby Connections Endpoint ID -> Ignore background noise
+                return
+
+        # 4. Target Endpoint ID Filter (if specified in config)
+        if self.target_endpoints:
+            ep = parsed_info.get("endpoint_id") if parsed_info else None
+            if not ep or ep.upper() not in self.target_endpoints:
+                return
+
+        device_name = adv.local_name or device.name or "Unknown Device"
+
+        # 5. Session Tracking & Rate Limiting
         is_new_device = addr not in self.active_devices
 
         if is_new_device:
-            # First time seeing this device: Display detailed block
+            # First time seeing this target device: Display full card
             self.active_devices[addr] = {
                 "first_seen": now,
                 "last_seen": now,
@@ -219,17 +252,13 @@ class NearbyDiscoverer:
             proximity = estimate_distance(rssi)
 
             print("\n" + "=" * 65)
-            if is_google_nearby:
-                print(f"{BOLD}{GREEN}[NEW DEVICE DETECTED] Google Nearby Connections{RESET}")
-            else:
-                print(f"{BOLD}{CYAN}[NEW DEVICE DETECTED] Custom BLE Service{RESET} ({matched_custom_uuid})")
-
+            print(f"{BOLD}{GREEN}[TARGET PHONE DETECTED] Google Nearby Connections{RESET}")
             print(f"Time: {timestamp} | MAC: {BOLD}{addr}{RESET} | Name: {device_name}")
             print(f"RSSI: {BOLD}{rssi} dBm{RESET} ({proximity})")
 
             if parsed_info:
                 if parsed_info.get("endpoint_id"):
-                    print(f"Endpoint ID: {BOLD}{parsed_info['endpoint_id']}{RESET}")
+                    print(f"Endpoint ID: {BOLD}{GREEN}{parsed_info['endpoint_id']}{RESET}")
                 if parsed_info.get("endpoint_info"):
                     print(f"Endpoint Info: {parsed_info['endpoint_info']}")
                 if parsed_info.get("hex"):
@@ -270,8 +299,13 @@ class NearbyDiscoverer:
             time_since_last_log = now - dev["last_logged_time"]
             rssi_diff = abs(rssi - dev["last_logged_rssi"])
 
-            # Print single-line update only if 10 seconds elapsed OR RSSI changed significantly (>= 5 dBm)
-            if time_since_last_log >= self.update_interval or rssi_diff >= self.rssi_delta:
+            # Never log faster than min_log_interval (5s)
+            # Log only if update_interval elapsed (10s) OR (min_interval elapsed AND RSSI delta >= 8 dBm)
+            should_log = (time_since_last_log >= self.update_interval) or (
+                time_since_last_log >= self.min_log_interval and rssi_diff >= self.rssi_delta
+            )
+
+            if should_log:
                 dev["last_logged_time"] = now
                 dev["last_logged_rssi"] = rssi
                 duration = int(now - dev["first_seen"])
@@ -316,12 +350,12 @@ async def main():
     print(f"{BOLD}{CYAN}   Raspberry Pi Nearby Connections BLE Discoverer{RESET}")
     print(f"{BOLD}{CYAN}=========================================================={RESET}")
     print(f"- Target Service ID: {BOLD}{discoverer.service_id}{RESET}")
-    print(f"- Service ID Hash Prefix: {discoverer.service_id_hash[:3].hex().upper()}")
+    print(f"- Filter Noise: ONLY Nearby Connections Advertisers (Endpoint ID required)")
     print(f"- RSSI Sensitivity Filter: >= {discoverer.rssi_threshold} dBm")
-    print(f"- Update Interval: {discoverer.update_interval}s (or RSSI delta >= {discoverer.rssi_delta} dBm)")
+    print(f"- Update Interval: {discoverer.update_interval}s (Min interval: {discoverer.min_log_interval}s)")
     print(f"- Device Departure Timeout: {discoverer.timeout_seconds}s")
     print(f"- Log File: {discoverer.log_file}")
-    print("Scanning for smartphone advertising packets... (Stop: Ctrl+C)\n")
+    print("Scanning for target smartphone... (Stop: Ctrl+C)\n")
 
     scanner = BleakScanner(
         detection_callback=discoverer.handle_detection,

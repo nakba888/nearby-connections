@@ -1,13 +1,15 @@
 {
   "service_id": "com.atec.mobility.k.hero.nearby.connections.SERVICE_ID",
-  "scan_all_google_nearby": true,
+  "only_nearby_connections_endpoints": true,
+  "target_endpoint_ids": [],
+  "scan_all_google_nearby": false,
   "custom_service_uuids": [
-    "0000fef3-0000-1000-8000-00805f9b34fb",
-    "12345678-1234-5678-1234-56789abcdef0"
+    "0000fef3-0000-1000-8000-00805f9b34fb"
   ],
-  "rssi_threshold": -85,
+  "rssi_threshold": -80,
   "update_interval_seconds": 10,
-  "rssi_delta_threshold": 5,
+  "min_log_interval_seconds": 5,
+  "rssi_delta_threshold": 8,
   "timeout_seconds": 15,
   "log_to_file": true,
   "log_file": "detections.log",
